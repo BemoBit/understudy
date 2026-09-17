@@ -24,6 +24,26 @@ awk 'BEGIN { for (i = 1; i <= 500; i++) print "line " i }' >"$WORK/big.txt"
 awk 'BEGIN { for (i = 1; i <= 10; i++) print "line " i }'  >"$WORK/small.txt"
 printf 'binary\000payload\n' >"$WORK/blob.bin"
 
+# A stub `claude` on PATH stands in for the real CLI: it lets delegate.sh run end
+# to end with no network, and it satisfies the hooks' fail-open guard. Without
+# it every deny case silently becomes an allow on a machine with no Claude Code
+# installed — which is exactly what CI is.
+mkdir -p "$WORK/bin"
+cat >"$WORK/bin/claude" <<'STUB'
+#!/usr/bin/env bash
+cat >/dev/null                                   # drain the prompt from stdin
+case "${STUB_BEHAVIOUR:-ok}" in
+  ok)        printf '{"is_error":false,"result":"• delegated answer","usage":{"input_tokens":120,"output_tokens":8},"total_cost_usd":0.0001,"duration_ms":1234}\n'; exit 0 ;;
+  api_error) printf '{"is_error":true,"result":"model not found","api_error_status":404,"usage":{},"total_cost_usd":0}\n'; exit 1 ;;
+  garbage)   printf 'not json at all\n'; exit 0 ;;
+  fenced)    printf '{"is_error":false,"result":"```java\\nclass A {}\\n```","usage":{"input_tokens":1,"output_tokens":1},"total_cost_usd":0,"duration_ms":1}\n'; exit 0 ;;
+  refuse)    printf '{"is_error":false,"result":"ERROR: no reference for the target type","usage":{"input_tokens":1,"output_tokens":1},"total_cost_usd":0,"duration_ms":1}\n'; exit 0 ;;
+  hang)      sleep 30; exit 0 ;;
+esac
+STUB
+chmod +x "$WORK/bin/claude"
+export PATH="$WORK/bin:$PATH"
+
 # Returns "deny" or "allow" for one hook invocation.
 run_hook() { # run_hook <hook> <json>
   local out
@@ -69,24 +89,6 @@ check "env-prefixed cat is caught"      deny  "$(run_hook check-bash-read "$(bas
 check "cat with flag still caught"      deny  "$(run_hook check-bash-read "$(bash_json "cat -n $WORK/big.txt")")"
 check "binary cat passes"               allow "$(run_hook check-bash-read "$(bash_json "cat $WORK/blob.bin")")"
 check "empty command passes"            allow "$(run_hook check-bash-read '{"tool_name":"Bash","tool_input":{}}')"
-
-# --- transport --------------------------------------------------------------
-# A stub `claude` lets the real delegate.sh run end to end with no network.
-mkdir -p "$WORK/bin"
-cat >"$WORK/bin/claude" <<'STUB'
-#!/usr/bin/env bash
-cat >/dev/null                                   # drain the prompt from stdin
-case "${STUB_BEHAVIOUR:-ok}" in
-  ok)        printf '{"is_error":false,"result":"• delegated answer","usage":{"input_tokens":120,"output_tokens":8},"total_cost_usd":0.0001,"duration_ms":1234}\n'; exit 0 ;;
-  api_error) printf '{"is_error":true,"result":"model not found","api_error_status":404,"usage":{},"total_cost_usd":0}\n'; exit 1 ;;
-  garbage)   printf 'not json at all\n'; exit 0 ;;
-  fenced)    printf '{"is_error":false,"result":"```java\\nclass A {}\\n```","usage":{"input_tokens":1,"output_tokens":1},"total_cost_usd":0,"duration_ms":1}\n'; exit 0 ;;
-  refuse)    printf '{"is_error":false,"result":"ERROR: no reference for the target type","usage":{"input_tokens":1,"output_tokens":1},"total_cost_usd":0,"duration_ms":1}\n'; exit 0 ;;
-  hang)      sleep 30; exit 0 ;;
-esac
-STUB
-chmod +x "$WORK/bin/claude"
-export PATH="$WORK/bin:$PATH"
 
 printf '\nTransport\n'
 out=$("$ROOT/scripts/bulk-read" --question q --paths "$WORK/small.txt" 2>/dev/null)

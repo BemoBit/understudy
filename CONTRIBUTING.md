@@ -13,6 +13,14 @@ bash plugins/understudy/evals/run.sh
 `claude` on `PATH`. If your change touches a hook or a script, it needs a case
 here, and the case has to fail before your fix and pass after it.
 
+Run it once in a stripped environment too. The hooks fail open when `claude` is
+missing, so a suite that leans on your own installation passes locally and
+denies nothing on a clean machine:
+
+```bash
+env -i HOME="$HOME" PATH=/usr/bin:/bin bash plugins/understudy/evals/run.sh
+```
+
 ```bash
 shellcheck -s bash --severity=warning \
   plugins/understudy/scripts/* plugins/understudy/scripts/lib/*.sh \
