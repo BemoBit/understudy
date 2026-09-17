@@ -1,0 +1,19 @@
+{
+  "name": "understudy",
+  "displayName": "Understudy",
+  "version": "1.0.0",
+  "description": "Routes I/O-heavy agent work to a cheap Claude model through the local Claude Code CLI. Hooks block whole-file reads and redirect to bulk-read/code-write. No API key, no external service.",
+  "author": {
+    "name": "Behnam Moradi"
+  },
+  "repository": "https://github.com/BemoBit/understudy",
+  "license": "Apache-2.0",
+  "keywords": [
+    "token-optimization",
+    "model-routing",
+    "delegation",
+    "haiku",
+    "context-window"
+  ],
+  "skills": "./skills/"
+}

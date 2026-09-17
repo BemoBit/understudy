@@ -1,0 +1,22 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "understudy",
+  "version": "1.0.0",
+  "description": "Token-saving delegation plugins for Claude Code.",
+  "owner": {
+    "name": "Behnam Moradi"
+  },
+  "plugins": [
+    {
+      "name": "understudy",
+      "description": "Routes I/O-heavy agent work to a cheap Claude model through the local Claude Code CLI. Hooks block whole-file reads and redirect to bulk-read/code-write. No API key, no external service.",
+      "version": "1.0.0",
+      "author": {
+        "name": "Behnam Moradi"
+      },
+      "repository": "https://github.com/BemoBit/understudy",
+      "source": "./plugins/understudy",
+      "category": "developer-tools"
+    }
+  ]
+}

@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# Delegate boilerplate generation to a cheap Claude model.
+#
+#   code-write --spec "Write tests for UserService" \
+#              --reference tests/OrderTest.java --target tests/UserTest.java
+#
+# --reference is required on purpose: without a file to match patterns against,
+# the worker produces context-free code that fits nothing in the project.
+
+set -uo pipefail
+
+# shellcheck disable=SC1091
+. "$(cd "$(dirname "$0")" && pwd)/lib/delegate.sh"
+
+MODE="code-writer"
+spec=""
+target=""
+force=0
+references=()
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: code-write --spec "<what to build>" --reference <file> [--reference <file> ...]
+                  [--target <path>] [--force]
+
+  --spec <text>        What to generate (required)
+  --reference <file>   Existing file whose patterns the output must match
+                       (required; repeatable)
+  --target <path>      Write the result here instead of stdout
+  --force              Allow --target to overwrite an existing file
+  --mode <name>        Worker mode / system prompt (default: code-writer)
+  --model <name>       Override the delegate model for this call
+EOF
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --spec)      spec="${2:-}"; shift 2 ;;
+    --reference) references+=("${2:-}"); shift 2 ;;
+    --target)    target="${2:-}"; shift 2 ;;
+    --force)     force=1; shift ;;
+    --mode)      MODE="${2:-}"; shift 2 ;;
+    --model)     UNDERSTUDY_MODEL="${2:-}"; export UNDERSTUDY_MODEL; shift 2 ;;
+    -h|--help)   usage; exit 0 ;;
+    *)           understudy_err "unknown argument: $1"; usage; exit 2 ;;
+  esac
+done
+
+if [ -z "$spec" ]; then understudy_err "--spec is required"; usage; exit 2; fi
+if [ ${#references[@]} -eq 0 ]; then
+  understudy_err "--reference is required: without one the worker cannot match the project's patterns"
+  usage; exit 2
+fi
+if [ -n "$target" ] && [ -e "$target" ] && [ "$force" -ne 1 ]; then
+  understudy_err "refusing to overwrite existing file: $target (pass --force to allow)"
+  exit 1
+fi
+
+understudy_preflight || exit 1
+
+for ref in "${references[@]}"; do
+  understudy_check_readable "$ref" || exit 1
+done
+
+prompt=''; understudy_tmpfile prompt || exit 1
+for ref in "${references[@]}"; do
+  understudy_append_file "$prompt" "$ref" 0
+done
+{
+  printf 'Spec: %s\n' "$spec"
+  [ -n "$target" ] && printf 'The output will be saved as: %s\n' "$target"
+} >>"$prompt"
+
+raw=''; understudy_tmpfile raw || exit 1
+understudy_invoke "$MODE" "$prompt" >"$raw" || exit 1
+
+# The mode is told to answer with a bare ERROR: line when the spec cannot be
+# met. Honour that instead of writing the refusal into a source file.
+if head -n 1 "$raw" | grep -q '^ERROR:'; then
+  understudy_err "the worker could not satisfy the spec:"
+  cat "$raw" >&2
+  exit 1
+fi
+
+# Strip one enclosing markdown fence if the whole answer is wrapped in one.
+clean=''; understudy_tmpfile clean || exit 1
+awk '
+  NR == 1 && /^[[:space:]]*```/ { fenced = 1; next }
+  { lines[++n] = $0 }
+  END {
+    last = n
+    if (fenced) { while (last > 0 && lines[last] ~ /^[[:space:]]*$/) last--
+                  if (last > 0 && lines[last] ~ /^[[:space:]]*```[[:space:]]*$/) last-- }
+    for (i = 1; i <= last; i++) print lines[i]
+  }
+' "$raw" >"$clean"
+
+if [ -n "$target" ]; then
+  mkdir -p "$(dirname "$target")" || exit 1
+  cp "$clean" "$target" || exit 1
+  understudy_warn "[understudy: wrote $(wc -l <"$target" | tr -d ' ') lines to $target]"
+else
+  cat "$clean"
+fi

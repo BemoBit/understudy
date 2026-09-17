@@ -1,0 +1,55 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      # The suite runs against a stub `claude` on PATH, so it needs no
+      # credentials, makes no network calls, and costs nothing.
+      - name: Run the offline suite
+        run: bash plugins/understudy/evals/run.sh
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate JSON manifests
+        run: |
+          jq -e . .claude-plugin/marketplace.json > /dev/null
+          jq -e . plugins/understudy/.claude-plugin/plugin.json > /dev/null
+          jq -e . plugins/understudy/hooks/hooks.json > /dev/null
+
+      - name: ShellCheck
+        run: |
+          shellcheck -s bash --severity=warning \
+            plugins/understudy/scripts/bulk-read \
+            plugins/understudy/scripts/code-write \
+            plugins/understudy/scripts/understudy-doctor \
+            plugins/understudy/scripts/lib/delegate.sh \
+            plugins/understudy/hooks/check-file-size \
+            plugins/understudy/hooks/check-bash-read \
+            plugins/understudy/evals/run.sh
+
+      - name: Executable bits
+        run: |
+          for f in plugins/understudy/scripts/bulk-read \
+                   plugins/understudy/scripts/code-write \
+                   plugins/understudy/scripts/understudy-doctor \
+                   plugins/understudy/hooks/check-file-size \
+                   plugins/understudy/hooks/check-bash-read; do
+            test -x "$f" || { echo "not executable: $f"; exit 1; }
+          done

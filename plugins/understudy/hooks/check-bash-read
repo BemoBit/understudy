@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# PreToolUse:Bash — catch `cat`/`bat`/`less` on a large file, which is just the
+# Read hook's problem wearing a shell.
+#
+# Same rules as check-file-size: deny or stay silent, never "allow"; fail open
+# on anything uncertain. The command string is never evaluated — it is split on
+# whitespace with globbing off, so nothing in it can execute from here.
+
+set -uo pipefail
+
+input=$(cat)
+
+allow() { exit 0; }
+
+deny() {
+  jq -nc --arg r "$1" \
+    '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'
+  exit 0
+}
+
+[ -n "${UNDERSTUDY_DISABLE:-}" ] && allow
+[ -n "${UNDERSTUDY_ACTIVE:-}" ] && allow
+[ -n "${CLAUDE_CODE_SAFE_MODE:-}" ] && allow
+
+command -v jq >/dev/null 2>&1 || allow
+command -v "${UNDERSTUDY_CLAUDE_BIN:-claude}" >/dev/null 2>&1 || allow
+
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+[ -x "$PLUGIN_ROOT/scripts/bulk-read" ] || allow
+
+MIN_LINES="${UNDERSTUDY_MIN_LINES:-350}"
+case "$MIN_LINES" in ''|*[!0-9]*) MIN_LINES=350 ;; esac
+
+command=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null)
+[ -n "$command" ] || allow
+
+# A pipe, a redirect or a substitution means the output is being filtered or
+# stored, not poured into the context. Those are targeted reads; leave them be.
+case "$command" in
+  *'|'*|*'>'*|*'<'*|*'$('*|*'`'*) allow ;;
+esac
+
+set -f                      # split on whitespace, never glob
+
+# `|` and `||` are already handled above, so only `&&` and `;` can chain here.
+while IFS= read -r segment; do
+  # shellcheck disable=SC2206
+  words=($segment)
+  [ ${#words[@]} -gt 0 ] || continue
+
+  i=0
+  while [ $i -lt ${#words[@]} ]; do    # skip leading VAR=value assignments
+    case "${words[$i]}" in
+      *=*) i=$((i + 1)) ;;
+      *)   break ;;
+    esac
+  done
+  [ $i -lt ${#words[@]} ] || continue
+
+  case "$(basename "${words[$i]}")" in
+    cat|bat|less|more|view) ;;         # whole-file readers
+    *) continue ;;                     # head/tail are bounded by default; fine
+  esac
+
+  i=$((i + 1))
+  while [ $i -lt ${#words[@]} ]; do
+    candidate="${words[$i]}"
+    i=$((i + 1))
+    case "$candidate" in -*) continue ;; esac
+    [ -f "$candidate" ] || continue
+    grep -Iq . "$candidate" 2>/dev/null || continue
+
+    lines=$(wc -l <"$candidate" 2>/dev/null | tr -d ' ')
+    case "${lines:-0}" in ''|*[!0-9]*) continue ;; esac
+    [ "$lines" -le "$MIN_LINES" ] && continue
+
+    deny "$candidate is $lines lines (understudy threshold: $MIN_LINES). Dumping it into the shell puts the whole file in your context.
+
+- To ask something about it, delegate the read:
+  $PLUGIN_ROOT/scripts/bulk-read --question \"<your question>\" --paths $candidate
+- To see one region, use the Read tool with offset/limit, or pipe this through
+  sed/grep/head — piped and redirected commands are never blocked."
+  done
+done <<EOF
+$(printf '%s' "$command" | awk '{ gsub(/&&|;/, "\n"); print }')
+EOF
+
+allow

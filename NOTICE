@@ -1,0 +1,20 @@
+Understudy
+Copyright 2026 Behnam Moradi
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use
+this file except in compliance with the License. You may obtain a copy of the
+License at http://www.apache.org/licenses/LICENSE-2.0
+
+---
+
+Acknowledgement
+
+The shape of this project — a PreToolUse hook that refuses oversized reads, a
+pair of named scripts that carry the delegation, and skills that tell the agent
+when to reach for them — was inspired by the "shunt" plugin in
+spotify/portal-ai-plugins (Apache-2.0, Copyright 2025 Spotify AB).
+
+Understudy is an independent implementation. It contains no code from that
+project, and it has no dependency on Spotify Portal, the Portal CLI, or AiKA.
+Where shunt delegates through a commercially licensed CLI to a hosted AI
+service, Understudy delegates through the user's own Claude Code installation.

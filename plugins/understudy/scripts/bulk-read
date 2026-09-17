@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Delegate file reading to a cheap Claude model.
+#
+#   bulk-read --question "What does this service do?" --paths src/a.ts src/b.ts
+#
+# The files go to the worker, never into the caller's context. Each call is
+# independent: to ask a follow-up, ask again with the same --paths.
+
+set -uo pipefail
+
+# shellcheck disable=SC1091
+. "$(cd "$(dirname "$0")" && pwd)/lib/delegate.sh"
+
+MODE="bulk-reader"
+question=""
+numbered=1
+paths=()
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: bulk-read --question "<question>" --paths <file> [<file> ...]
+
+  --question <text>    What to ask about the files (required)
+  --paths <file...>    Files to send (required; must be text files)
+  --mode <name>        Worker mode / system prompt (default: bulk-reader)
+  --model <name>       Override the delegate model for this call
+  --no-line-numbers    Send raw file content instead of numbered lines
+EOF
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --question)        question="${2:-}"; shift 2 ;;
+    --mode)            MODE="${2:-}"; shift 2 ;;
+    --model)           UNDERSTUDY_MODEL="${2:-}"; export UNDERSTUDY_MODEL; shift 2 ;;
+    --no-line-numbers) numbered=0; shift ;;
+    -h|--help)         usage; exit 0 ;;
+    --paths)           shift
+                       while [ $# -gt 0 ] && [ "${1#--}" = "$1" ]; do paths+=("$1"); shift; done ;;
+    *)                 understudy_err "unknown argument: $1"; usage; exit 2 ;;
+  esac
+done
+
+if [ -z "$question" ]; then understudy_err "--question is required"; usage; exit 2; fi
+if [ ${#paths[@]} -eq 0 ]; then understudy_err "--paths is required"; usage; exit 2; fi
+
+understudy_preflight || exit 1
+
+for path in "${paths[@]}"; do
+  understudy_check_readable "$path" || exit 1
+done
+
+prompt=''; understudy_tmpfile prompt || exit 1
+for path in "${paths[@]}"; do
+  understudy_append_file "$prompt" "$path" "$numbered"
+done
+printf 'Question: %s\n' "$question" >>"$prompt"
+
+understudy_invoke "$MODE" "$prompt" || exit 1

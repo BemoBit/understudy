@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# Read-only readiness check. Changes nothing; --probe additionally spends a few
+# hundredths of a cent proving the delegate model actually answers.
+
+set -uo pipefail
+
+# shellcheck disable=SC1091
+. "$(cd "$(dirname "$0")" && pwd)/lib/delegate.sh"
+
+probe=0
+[ "${1:-}" = "--probe" ] && probe=1
+
+pass=0; fail=0
+ok()   { printf '  ✓ %s\n' "$*"; pass=$((pass + 1)); }
+bad()  { printf '  ✗ %s\n' "$*"; fail=$((fail + 1)); }
+note() { printf '    %s\n' "$*"; }
+
+printf '\nunderstudy doctor\n─────────────────\n\nRuntime\n'
+
+if command -v "$UNDERSTUDY_CLAUDE_BIN" >/dev/null 2>&1; then
+  ok "claude CLI — $("$UNDERSTUDY_CLAUDE_BIN" --version 2>/dev/null | head -1)"
+else
+  bad "claude CLI not found (\$UNDERSTUDY_CLAUDE_BIN=$UNDERSTUDY_CLAUDE_BIN)"
+  note "Install it from https://claude.com/claude-code"
+fi
+
+if command -v jq >/dev/null 2>&1; then
+  ok "jq — $(jq --version 2>/dev/null)"
+else
+  bad "jq not found"
+  note "brew install jq"
+fi
+
+printf '\nPlugin\n'
+for f in scripts/bulk-read scripts/code-write hooks/check-file-size hooks/check-bash-read; do
+  if [ -x "$UNDERSTUDY_ROOT/$f" ]; then ok "$f is executable"; else bad "$f is missing or not executable"; fi
+done
+
+for mode in bulk-reader code-writer; do
+  if file=$(understudy_mode_prompt_file "$mode" 2>/dev/null); then
+    case "$file" in
+      "$UNDERSTUDY_ROOT"/*) ok "mode $mode — bundled" ;;
+      *)                 ok "mode $mode — overridden at $file" ;;
+    esac
+  else
+    bad "mode $mode has no prompt file"
+  fi
+done
+
+printf '\nConfiguration\n'
+printf '  %-28s %s\n' "delegate model"        "$(understudy_model_for bulk-reader)"
+printf '  %-28s %s\n' "code-writer model"     "$(understudy_model_for code-writer)"
+printf '  %-28s %s lines\n' "hook threshold"  "${UNDERSTUDY_MIN_LINES:-350}"
+printf '  %-28s %s tokens\n' "max input"      "$UNDERSTUDY_MAX_INPUT_TOKENS"
+printf '  %-28s %ss\n' "timeout"              "$UNDERSTUDY_TIMEOUT_SECONDS"
+printf '  %-28s %s\n' "hooks"                 "$([ -n "${UNDERSTUDY_DISABLE:-}" ] && echo 'DISABLED (UNDERSTUDY_DISABLE is set)' || echo enabled)"
+printf '  %-28s %s\n' "usage log"             "${UNDERSTUDY_LOG:-off}"
+
+if [ "$probe" -eq 1 ]; then
+  printf '\nLive probe\n'
+  if understudy_preflight >/dev/null 2>&1; then
+    p=''; understudy_tmpfile p
+    printf 'Question: reply with the single word: ready\n' >"$p"
+    if answer=$(understudy_invoke bulk-reader "$p" 2>/dev/null); then
+      ok "delegation round trip — worker said: $(printf '%s' "$answer" | head -1)"
+    else
+      bad "delegation round trip failed"
+      note "Re-run the same call without --probe suppression: understudy-doctor --probe 2>&1"
+    fi
+  else
+    bad "skipped: preflight failed"
+  fi
+else
+  printf '\n  (run with --probe to spend ~$0.001 verifying a real delegation)\n'
+fi
+
+printf '\n%s checks passed, %s failed\n\n' "$pass" "$fail"
+[ "$fail" -eq 0 ]

@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# PreToolUse:Read — stop full reads of large files and point at the delegate.
+#
+# Design rules this hook follows:
+#   * It never emits an "allow" decision, only "deny" or nothing. Allowing would
+#     auto-approve a read that the permission system might otherwise ask about;
+#     staying silent lets the normal flow continue untouched.
+#   * It fails open. Every condition that makes delegation impossible — no jq,
+#     no claude, no scripts, disabled by env — results in the read going
+#     through. A hook that bricks the agent when its backend is missing is
+#     worse than no hook.
+
+set -uo pipefail
+
+input=$(cat)
+
+allow() { exit 0; }
+
+deny() {
+  jq -nc --arg r "$1" \
+    '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'
+  exit 0
+}
+
+[ -n "${UNDERSTUDY_DISABLE:-}" ] && allow      # user kill switch
+[ -n "${UNDERSTUDY_ACTIVE:-}" ] && allow       # we are inside a delegation already
+[ -n "${CLAUDE_CODE_SAFE_MODE:-}" ] && allow
+
+command -v jq >/dev/null 2>&1 || allow
+command -v "${UNDERSTUDY_CLAUDE_BIN:-claude}" >/dev/null 2>&1 || allow
+
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+[ -x "$PLUGIN_ROOT/scripts/bulk-read" ] || allow
+
+MIN_LINES="${UNDERSTUDY_MIN_LINES:-350}"
+case "$MIN_LINES" in ''|*[!0-9]*) MIN_LINES=350 ;; esac
+
+IFS=$'\t' read -r file_path offset limit <<EOF
+$(printf '%s' "$input" | jq -r '[(.tool_input.file_path // "-"), (.tool_input.offset // "-"), (.tool_input.limit // "-")] | @tsv' 2>/dev/null)
+EOF
+
+[ "${file_path:--}" = "-" ] && allow
+[ "${offset:--}" != "-" ] && allow          # targeted read: caller knows what it wants
+[ "${limit:--}" != "-" ] && allow
+[ -f "$file_path" ] || allow                # let Read report its own error
+grep -Iq . "$file_path" 2>/dev/null || allow  # binary: nothing to delegate
+
+lines=$(wc -l <"$file_path" 2>/dev/null | tr -d ' ')
+case "${lines:-0}" in ''|*[!0-9]*) allow ;; esac
+[ "$lines" -le "$MIN_LINES" ] && allow      # under the threshold, overhead wins
+
+deny "$file_path is $lines lines (understudy threshold: $MIN_LINES). Do not read it whole.
+
+- To ask something about it, delegate the read — the file never enters your context:
+  $PLUGIN_ROOT/scripts/bulk-read --question \"<your question>\" --paths $file_path
+- To edit it, you need exact text: re-read just the region with offset/limit.
+- If you genuinely need the whole file in context, read it in slices with
+  offset/limit — those are never blocked. Tell the user why, so they can set
+  UNDERSTUDY_DISABLE=1 in .claude/settings.json if this file should be exempt."
